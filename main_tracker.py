@@ -1,4 +1,5 @@
 import sqlite3
+import openpyxl
 from datetime import datetime
 
 # Connect to SQLite database
@@ -62,6 +63,223 @@ def display_transactions(date_format):
             amount_display = f"\033[91m{row[1]}\033[0m"  # Red for expenses
         
         print(f"ID: {row[0]}  |  Amount: {amount_display}  |  Category: {row[2]}  |  Date: {display_date}  |  Type: {row[4]}")
+
+def merge_and_rename_categories(old_categories, new_category):
+    for old_category in old_categories:
+        cursor.execute("UPDATE transactions SET category = ? WHERE category = ?", (new_category, old_category))
+    conn.commit()
+    print(f"All transactions under {', '.join(old_categories)} have been merged into '{new_category}'.")
+
+def capitalize_category_name(category_name):
+    return ' '.join(word.capitalize() for word in category_name.split())
+
+def choose_categories_to_merge():
+    cursor.execute("SELECT DISTINCT category FROM transactions")
+    categories = cursor.fetchall()
+    categories = [category[0] for category in categories]
+    selected_categories = []
+    
+    print("\nChoose the first category to merge:")
+    for idx, category in enumerate(categories, 1):
+        print(f"{idx}. {category}")
+    
+    choice = int(input("Enter the number of the category to merge: "))
+    if 1 <= choice <= len(categories):
+        selected_categories.append(categories[choice - 1])
+    else:
+        print("Invalid choice. Please try again.")
+        return choose_categories_to_merge()
+    
+    while True:
+        remaining_categories = [cat for cat in categories if cat not in selected_categories]
+        if not remaining_categories:
+            print("No more categories left to merge.")
+            break
+
+        print("\nChoose another category to merge or enter '0' to finish:")
+        for idx, category in enumerate(remaining_categories, 1):
+            print(f"{idx}. {category}")
+        
+        choice = input("Enter the number of the category to merge or '0' to finish: ")
+        if choice == '0':
+            break
+        choice = int(choice)
+        if 1 <= choice <= len(remaining_categories):
+            selected_categories.append(remaining_categories[choice - 1])
+        else:
+            print("Invalid choice. Please try again.")
+    
+    return selected_categories
+
+def prompt_for_new_category_name():
+    new_category = input("Enter the new category name for the merged categories: ")
+    return capitalize_category_name(new_category)
+
+def generate_general_summary_excel():
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "General Summary"
+
+    # Add Totals Breakdown section
+    sheet.append(["Totals Breakdown:"])
+    totals_headers = ["Totals", "Amount"]
+    sheet.append(totals_headers)
+
+    # Fetch and add totals
+    cursor.execute("SELECT SUM(amount) FROM transactions WHERE type = 'Income'")
+    total_income = cursor.fetchone()[0] or 0
+    cursor.execute("SELECT SUM(amount) FROM transactions WHERE type = 'Expense'")
+    total_expense = abs(cursor.fetchone()[0] or 0)
+    net_total = total_income - total_expense
+
+    totals_data = [
+        ["Total Income", total_income],
+        ["Total Expense", total_expense],
+        ["Net Total", net_total]
+    ]
+    for row in totals_data:
+        sheet.append(row)
+
+    # Add spacing between sections
+    sheet.append([""])
+
+    # Add Income Breakdown section
+    sheet.append(["Income Breakdown:"])
+    income_headers = ["Amount", "Group"]
+    sheet.append(income_headers)
+
+    # Fetch and add income data
+    cursor.execute("SELECT SUM(amount), category FROM transactions WHERE type = 'Income' GROUP BY category")
+    income_sums = cursor.fetchall()
+    for amount, category in income_sums:
+        sheet.append([amount, category])
+
+    # Add spacing between sections
+    sheet.append([""])
+
+    # Add Expense Breakdown section
+    sheet.append(["Expenses Breakdown:"])
+    expense_headers = ["Amount", "Group"]
+    sheet.append(expense_headers)
+
+    # Fetch and add expense data
+    cursor.execute("SELECT SUM(amount), category FROM transactions WHERE type = 'Expense' GROUP BY category")
+    expense_sums = cursor.fetchall()
+    for amount, category in expense_sums:
+        amount_abs = abs(amount)  # Ensure the amount is positive for readability
+        sheet.append([amount_abs, category])
+
+    # Save the file
+    workbook.save("general_summary.xlsx")
+    print("General summary saved as 'general_summary.xlsx'.")
+
+def generate_category_summary_excel():
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Category Summary"
+
+    # Add headers
+    headers = ["Category", "Type", "Amount", "Percentage"]
+    sheet.append(headers)
+
+    # Income Breakdown
+    cursor.execute("SELECT category, SUM(amount) FROM transactions WHERE type = 'Income' GROUP BY category")
+    income_sums = cursor.fetchall()
+    cursor.execute("SELECT SUM(amount) FROM transactions WHERE type = 'Income'")
+    total_income = cursor.fetchone()[0] or 0
+
+    for category, amount in income_sums:
+        percentage = (amount / total_income) if total_income else 0
+        sheet.append([category, 'Income', amount, percentage])
+
+    # Expense Breakdown
+    cursor.execute("SELECT category, SUM(amount) FROM transactions WHERE type = 'Expense' GROUP BY category")
+    expense_sums = cursor.fetchall()
+    cursor.execute("SELECT SUM(amount) FROM transactions WHERE type = 'Expense'")
+    total_expense = cursor.fetchone()[0] or 0
+
+    for category, amount in expense_sums:
+        amount_abs = abs(amount)
+        percentage = (amount_abs / total_expense) if total_expense else 0
+        sheet.append([category, 'Expense', amount_abs, percentage])
+
+    # Format percentages correctly
+    for row in sheet.iter_rows(min_row=2, max_row=1+len(income_sums)+len(expense_sums), min_col=4, max_col=4):
+        for cell in row:
+            cell.number_format = '0.00%'
+
+    # Save the file
+    workbook.save("category_summary.xlsx")
+    print("Category summary saved as 'category_summary.xlsx'.")
+
+def generate_transactions_file():
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "All Transactions"
+
+    # Add headers for the transactions table
+    headers = ["ID", "Amount", "Category", "Date", "Type"]
+    sheet.append(headers)
+
+    # Fetch all transactions
+    cursor.execute("SELECT * FROM transactions")
+    transactions = cursor.fetchall()
+
+    # Add transactions data to the sheet
+    for transaction in transactions:
+        sheet.append(transaction)
+
+    # Create table for all transactions
+    table_ref = f"A1:E{len(transactions) + 1}"
+    transactions_table = openpyxl.worksheet.table.Table(displayName="AllTransactions", ref=table_ref)
+    sheet.add_table(transactions_table)
+
+    # Save the file
+    workbook.save("all_transactions.xlsx")
+    print("All transactions saved as 'all_transactions.xlsx'.")
+
+
+def generate_complete_summary():
+    cursor.execute("SELECT SUM(amount) FROM transactions WHERE type = 'Income'")
+    total_income = cursor.fetchone()[0] or 0
+    
+    cursor.execute("SELECT SUM(amount) FROM transactions WHERE type = 'Expense'")
+    total_expense = abs(cursor.fetchone()[0] or 0)  # Convert to positive for display purposes
+
+    net_total = total_income - total_expense
+    
+    print(f"\nTotal Income: {total_income}")
+    print(f"Total Expense: {total_expense}")
+    print(f"Net Total: {net_total}\n")
+    
+    # Income Breakdown
+    cursor.execute("SELECT category, SUM(amount) FROM transactions WHERE type = 'Income' GROUP BY category")
+    income_sums = cursor.fetchall()
+    
+    print("Income Breakdown:\n")
+    for category, amount in income_sums:
+        percentage = (amount / total_income) * 100 if total_income else 0
+        print(f"Category: {category}\nAmount: {amount}\nPercentage: {percentage:.2f}%\n")
+    
+    # Expense Breakdown
+    cursor.execute("SELECT category, SUM(amount) FROM transactions WHERE type = 'Expense' GROUP BY category")
+    expense_sums = cursor.fetchall()
+    
+    print("Expense Breakdown:\n")
+    for category, amount in expense_sums:
+        amount_abs = abs(amount)  # Convert to positive for display purposes
+        percentage = (amount_abs / total_expense) * 100 if total_expense else 0
+        print(f"Category: {category}\nAmount: {amount_abs}\nPercentage: {percentage:.2f}%\n")
+
+def generate_category_summary(category):
+    cursor.execute("SELECT SUM(amount) FROM transactions WHERE category = ?", (category,))
+    total_category_spent = cursor.fetchone()[0] or 0
+    print(f"\nTotal Amount Spent in {category}: {total_category_spent}")
+
+def merge_categories_menu():
+    old_categories = choose_categories_to_merge()
+    new_category = prompt_for_new_category_name()
+    merge_and_rename_categories(old_categories, new_category)
 
 
 def delete_transaction(transaction_id):
@@ -141,43 +359,45 @@ def choose_category():
         else:
             print("Invalid choice. Please try again.")
 
-def generate_complete_summary():
-    cursor.execute("SELECT SUM(amount) FROM transactions WHERE type = 'Income'")
-    total_income = cursor.fetchone()[0] or 0
-    
-    cursor.execute("SELECT SUM(amount) FROM transactions WHERE type = 'Expense'")
-    total_expense = abs(cursor.fetchone()[0] or 0)  # Convert to positive for display purposes
+def summary_menu():
+    while True:
+        print("\nSummary Menu:")
+        print("1. General Summary")
+        print("2. Summary by Group")
+        print("3. Return to Main Menu")
+        choice = input("Enter your choice: ")
 
-    net_total = total_income - total_expense
-    
-    print(f"\nTotal Income: {total_income}")
-    print(f"Total Expense: {total_expense}")
-    print(f"Net Total: {net_total}\n")
-    
-    # Income Breakdown
-    cursor.execute("SELECT category, SUM(amount) FROM transactions WHERE type = 'Income' GROUP BY category")
-    income_sums = cursor.fetchall()
-    
-    print("Income Breakdown:\n")
-    for category, amount in income_sums:
-        percentage = (amount / total_income) * 100 if total_income else 0
-        print(f"Category: {category}\nAmount: {amount}\nPercentage: {percentage:.2f}%\n")
-    
-    # Expense Breakdown
-    cursor.execute("SELECT category, SUM(amount) FROM transactions WHERE type = 'Expense' GROUP BY category")
-    expense_sums = cursor.fetchall()
-    
-    print("Expense Breakdown:\n")
-    for category, amount in expense_sums:
-        amount_abs = abs(amount)  # Convert to positive for display purposes
-        percentage = (amount_abs / total_expense) * 100 if total_expense else 0
-        print(f"Category: {category}\nAmount: {amount_abs}\nPercentage: {percentage:.2f}%\n")
+        if choice == '1':
+            summary_submenu("general")
+        elif choice == '2':
+            summary_submenu("category")
+        elif choice == '3':
+            break
+        else:
+            print("Invalid choice. Please try again.")
 
+def summary_submenu(summary_type):
+    while True:
+        print("\nSummary Options:")
+        print("1. View Summary")
+        print("2. Generate Summary File")
+        print("3. Return to Summary Menu")
+        choice = input("Enter your choice: ")
 
-def generate_category_summary(category):
-    cursor.execute("SELECT SUM(amount) FROM transactions WHERE category = ?", (category,))
-    total_category_spent = cursor.fetchone()[0] or 0
-    print(f"\nTotal Amount Spent in {category}: {total_category_spent}")
+        if choice == '1':
+            if summary_type == "general":
+                generate_complete_summary()
+            elif summary_type == "category":
+                generate_category_summary()
+        elif choice == '2':
+            if summary_type == "general":
+                generate_general_summary_excel()
+            elif summary_type == "category":
+                generate_category_summary_excel()
+        elif choice == '3':
+            break
+        else:
+            print("Invalid choice. Please try again.")
 
 def add_transaction_menu():
     while True:
@@ -209,7 +429,8 @@ def transaction_menu():
         print("\nTransaction Menu:")
         print("1. Add a Transaction")
         print("2. Delete a Transaction")
-        print("3. Return to Main Menu")
+        print("3. Merge Transaction Groups")
+        print("4. Return to Main Menu")
         choice = input("Enter your choice: ")
 
         if choice == '1':
@@ -217,9 +438,12 @@ def transaction_menu():
         elif choice == '2':
             delete_transaction_menu()
         elif choice == '3':
+            merge_categories_menu()
+        elif choice == '4':
             break
         else:
             print("Invalid choice. Please try again.")
+
 
 def delete_transaction_menu():
     while True:
@@ -258,7 +482,9 @@ def main_menu():
         print("1. Transactions")
         print("2. View Transactions")
         print("3. Generate Summary")
-        print("4. Exit")
+        print("4. Merge Categories")
+        print("5. Generate Transactions File")  # New option
+        print("6. Exit")
         choice = input("Enter your choice: ")
 
         if choice == '1':
@@ -269,18 +495,16 @@ def main_menu():
                 continue
             display_transactions(date_format)
         elif choice == '3':
-            summary_type = choose_summary_type()
-            if summary_type == 'complete':
-                generate_complete_summary()
-            elif summary_type == 'category':
-                category = choose_category()
-                generate_category_summary(category)
-            elif summary_type == 'main_menu':
-                continue
+            summary_menu()
         elif choice == '4':
+            merge_categories_menu()
+        elif choice == '5':
+            generate_transactions_file()  # Call the new function
+        elif choice == '6':
             break
         else:
             print("Invalid choice. Please try again.")
+
 
 # Running the main menu
 main_menu()
